@@ -19,22 +19,26 @@ export default function App() {
   const [numPages, setNumPages] = useState(1);
   const [pageNumber, setPageNumber] = useState(1);
 
+  // točke
   const [points, setPoints] = useState([]); // {xNorm,yNorm,seq,name,comment,imageData,originalName,dateISO,pdfIdx,page,source,sessionId}
   const [seqCounter, setSeqCounter] = useState(0);
 
+  // pregled i sesije
   const [previewPhoto, setPreviewPhoto] = useState(null);
   const [showAllSessions, setShowAllSessions] = useState(false);
   const sessionId = useMemo(() => Date.now(), []);
 
+  // greške/upozorenja
   const [pdfError, setPdfError] = useState("");
   const [persistWarning, setPersistWarning] = useState("");
 
-  // Foto-tok: 1) foto/galerija → 2) klik na tlocrt → 3) naziv/komentar
+  // foto tok: 1) foto/galerija → 2) klik na tlocrt → 3) naziv/komentar
   const [stage, setStage] = useState("idle"); // "idle" | "awaitPlacement"
   const [stagedPhoto, setStagedPhoto] = useState(null); // {dataURL, originalName, source, dateISO}
 
-  // Prikaz opisa uz točke
-  const [showInfo, setShowInfo] = useState(true);
+  // Info-mod: po defaultu UKLJUČEN; prikazuje info SAMO na hover/tap (ne stalno)
+  const [infoMode, setInfoMode] = useState(true);
+  const [hoverSeq, setHoverSeq] = useState(null);
 
   const pageWrapRef = useRef(null);
   const exportRef = useRef(null);
@@ -48,14 +52,14 @@ export default function App() {
     accent: "#2a6f77",
   };
 
-  // ——— utils ———
+  // utils
   const safePersist = (key, value) => {
     try {
       localStorage.setItem(key, value);
       setPersistWarning("");
     } catch (err) {
       console.error("localStorage setItem failed:", err);
-      setPersistWarning("Upozorenje: nedovoljno prostora za trajno spremanje svih fotografija. Podaci su spremljeni privremeno.");
+      setPersistWarning("Upozorenje: nedovoljno prostora za trajno spremanje svih fotografija. Podaci su možda spremljeni privremeno.");
     }
   };
 
@@ -67,7 +71,7 @@ export default function App() {
       r.readAsDataURL(file);
     });
 
-  const compressImage = (dataUrl, maxDim = 1600, quality = 0.75) =>
+  const compressImage = (dataUrl, maxDim = 800, quality = 0.7) =>
     new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
@@ -86,7 +90,7 @@ export default function App() {
       img.src = dataUrl;
     });
 
-  // ——— init/load ———
+  // init
   useEffect(() => {
     const savedList = JSON.parse(localStorage.getItem("pepedot2_rn_list") || "[]");
     const savedActive = localStorage.getItem("pepedot2_active_rn") || "";
@@ -94,7 +98,7 @@ export default function App() {
     if (savedActive && savedList.includes(savedActive)) loadRn(savedActive);
   }, []);
 
-  // ——— persist ———
+  // persist
   useEffect(() => {
     if (!activeRn) return;
     const payload = { pdfs, activePdfIdx, pageNumber, points, seqCounter };
@@ -102,6 +106,7 @@ export default function App() {
     safePersist("pepedot2_active_rn", activeRn);
   }, [pdfs, activePdfIdx, pageNumber, points, seqCounter, activeRn]);
 
+  // RN
   const loadRn = (rn) => {
     const raw = localStorage.getItem(STORAGE_PREFIX + rn);
     const data = raw ? JSON.parse(raw) : { pdfs: [], activePdfIdx: 0, pageNumber: 1, points: [], seqCounter: 0 };
@@ -115,6 +120,7 @@ export default function App() {
     setStage("idle");
     setStagedPhoto(null);
     setPersistWarning("");
+    setInfoMode(true);
   };
 
   const createRn = () => {
@@ -131,6 +137,7 @@ export default function App() {
     setShowAllSessions(false);
     setStage("idle");
     setStagedPhoto(null);
+    setInfoMode(true);
   };
 
   const renameRn = () => {
@@ -163,6 +170,7 @@ export default function App() {
     }
   };
 
+  // PDF
   const addPdf = async (file) => {
     try {
       const buf = await file.arrayBuffer();
@@ -224,6 +232,7 @@ export default function App() {
     return { data: u8 };
   })();
 
+  // foto odabir
   const pickPhoto = (preferCamera=false) => new Promise((resolve) => {
     const input = document.createElement("input");
     input.type = "file";
@@ -233,12 +242,12 @@ export default function App() {
     input.click();
   });
 
-  // 1) gumb kamera/galerija → odaberi/okini fotku → čekaj postavljanje na tlocrt
+  // 1) gumb kamera/galerija → odaberi/okini fotku → čekaj postavljanje na tlocrt (privremeno ugasi info-mod)
   const startPhotoFlow = async (fromCamera) => {
     const file = await pickPhoto(!!fromCamera);
     if (!file) return;
     const raw = await fileToDataURL(file);
-    const compressed = await compressImage(raw, 1600, 0.75);
+    const compressed = await compressImage(raw, 800, 0.7);
     const d = new Date();
     const yyyy = d.getFullYear();
     const mm = String(d.getMonth() + 1).padStart(2, "0");
@@ -250,9 +259,10 @@ export default function App() {
       dateISO: `${yyyy}-${mm}-${dd}`,
     });
     setStage("awaitPlacement");
+    setInfoMode(false); // izlaz iz info-moda tijekom dodavanja
   };
 
-  // 2) klik na tlocrt → ako je u toku dodavanja, stvori točku s fotkom + 3) naziv/komentar
+  // 2) klik na tlocrt → ako je u toku dodavanja, stvori točku s fotkom + 3) naziv/komentar → spremi
   const handlePlanClick = async (e) => {
     if (!pdfs.length) return;
 
@@ -281,7 +291,7 @@ export default function App() {
     const nextSeq = seqCounter + 1;
 
     const base = window.prompt("Unesi naziv točke (npr. A233VIO):");
-    if (!base) { setStage("idle"); setStagedPhoto(null); return; }
+    if (!base) { setStage("idle"); setStagedPhoto(null); setInfoMode(true); return; }
     const comment = window.prompt("Unesi komentar (opcionalno):") || "";
 
     const d = new Date();
@@ -309,8 +319,10 @@ export default function App() {
     setSeqCounter(nextSeq);
     setStage("idle");
     setStagedPhoto(null);
+    setInfoMode(true); // povratak u info-mod
   };
 
+  // uredi/obriši
   const editPoint = (globalIdx) => {
     const copy = [...points];
     const p = copy[globalIdx];
@@ -328,6 +340,7 @@ export default function App() {
     setPoints(copy);
   };
 
+  // export
   const exportExcel = () => {
     const list = points
       .filter((p) => pdfs[p.pdfIdx])
@@ -357,6 +370,7 @@ export default function App() {
     pdf.save("nacrt_s_tockama.pdf");
   };
 
+  // stilovi
   const wrap = { minHeight: "100%", background: `linear-gradient(180deg, ${deco.bg} 0%, #0b181c 100%)`, color: deco.ink, fontFamily: "Inter,system-ui,Arial,sans-serif" };
   const container = { maxWidth: 1180, margin: "0 auto", padding: 16 };
   const panel = { background: deco.card, border: `1px solid ${deco.edge}`, borderRadius: 14, padding: 12, boxShadow: "0 1px 0 rgba(255,255,255,0.03) inset, 0 6px 24px rgba(0,0,0,0.25)" };
@@ -369,10 +383,20 @@ export default function App() {
     ghost: { background: "transparent" },
   };
 
+  // filtrirane točke za prikaz
   const currentPoints = points
     .map((p, idx) => ({ ...p, _idx: idx }))
     .filter((p) => p.pdfIdx === activePdfIdx && p.page === pageNumber)
     .filter((p) => (showAllSessions ? true : p.sessionId === sessionId));
+
+  // helper za mobilni "hover": kratki tap pokaže info 2s
+  const tapShowInfo = (seq) => {
+    if (!infoMode) return;
+    setHoverSeq(seq);
+    setTimeout(() => {
+      setHoverSeq((s) => (s === seq ? null : s));
+    }, 2000);
+  };
 
   return (
     <div style={wrap}>
@@ -445,11 +469,11 @@ export default function App() {
             </button>
             <button
               style={{ ...btn.base }}
-              onClick={() => setShowInfo(v => !v)}
+              onClick={() => setInfoMode(v => !v)}
               disabled={!pdfs.length}
-              title="Uključi/isključi prikaz opisa uz točke"
+              title="Info-mod: prikaz podataka o točkama samo na hover/tap"
             >
-              ℹ️ Info točka: {showInfo ? "UKLJUČENO" : "ISKLJUČENO"}
+              ℹ️ Info točka: {infoMode ? "UKLJUČENO" : "ISKLJUČENO"}
             </button>
             {stage === "awaitPlacement" && (
               <div style={{ alignSelf: "center", fontSize: 12, color: "#cfdadd" }}>
@@ -490,13 +514,25 @@ export default function App() {
             )}
 
             {currentPoints.map((p) => (
-              <div key={p.seq} style={{ position: "absolute", left: `${p.xNorm*100}%`, top: `${p.yNorm*100}%`, transform: "translate(-50%,-50%)" }}>
+              <div
+                key={p.seq}
+                onMouseEnter={() => infoMode && setHoverSeq(p.seq)}
+                onMouseLeave={() => infoMode && setHoverSeq(s => (s === p.seq ? null : s))}
+                onClick={(e) => { 
+                  // na mobilnom kratki tap prikaže info na 2s (ako je info-mod ON i nismo u dodavanju)
+                  if (stage === "idle" && infoMode) {
+                    e.stopPropagation();
+                    tapShowInfo(p.seq);
+                  }
+                }}
+                style={{ position: "absolute", left: `${p.xNorm*100}%`, top: `${p.yNorm*100}%`, transform: "translate(-50%,-50%)", cursor: infoMode ? "pointer" : "default" }}
+              >
                 <div style={{ width: 14, height: 14, borderRadius: 999, background: deco.gold, border: "2px solid #000" }} />
                 <div style={{ position: "absolute", left: 18, top: -10, background: "rgba(0,0,0,0.65)", color: "#fff", padding: "2px 6px", borderRadius: 8, fontSize: 12 }}>
                   {p.seq}
                 </div>
 
-                {showInfo && (p.name || p.comment || p.dateISO || p.originalName) && (
+                {infoMode && hoverSeq === p.seq && (p.name || p.comment || p.dateISO || p.originalName) && (
                   <div style={{
                     position: "absolute",
                     left: 20, top: 14,
@@ -532,7 +568,7 @@ export default function App() {
         <section style={{ ...panel, marginTop: 12 }}>
           <div style={{ fontWeight: 700, marginBottom: 8 }}>Fotografije (lista)</div>
           <div style={{ display: "grid", gap: 8 }}>
-            {currentPoints.map((p, i) => {
+            {currentPoints.map((p) => {
               const globalIdx = points.findIndex(q => q.seq === p.seq);
               const hasPhoto = !!p.imageData;
               return (
