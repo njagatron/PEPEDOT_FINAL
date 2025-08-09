@@ -19,24 +19,20 @@ export default function App() {
   const [numPages, setNumPages] = useState(1);
   const [pageNumber, setPageNumber] = useState(1);
 
-  // točke
   const [points, setPoints] = useState([]); // {xNorm,yNorm,seq,name,comment,imageData,originalName,dateISO,pdfIdx,page,source,sessionId}
   const [seqCounter, setSeqCounter] = useState(0);
 
-  // pregled i sesije
   const [previewPhoto, setPreviewPhoto] = useState(null);
   const [showAllSessions, setShowAllSessions] = useState(false);
   const sessionId = useMemo(() => Date.now(), []);
 
-  // greške/upozorenja
   const [pdfError, setPdfError] = useState("");
   const [persistWarning, setPersistWarning] = useState("");
 
-  // foto tok: 1) foto/galerija → 2) klik na tlocrt → 3) naziv/komentar
   const [stage, setStage] = useState("idle"); // "idle" | "awaitPlacement"
   const [stagedPhoto, setStagedPhoto] = useState(null); // {dataURL, originalName, source, dateISO}
 
-  // Info-mod: po defaultu UKLJUČEN; prikazuje info SAMO na hover/tap (ne stalno)
+  // INFO MOD — default ON, prikaz info samo na hover/tap
   const [infoMode, setInfoMode] = useState(true);
   const [hoverSeq, setHoverSeq] = useState(null);
 
@@ -59,7 +55,7 @@ export default function App() {
       setPersistWarning("");
     } catch (err) {
       console.error("localStorage setItem failed:", err);
-      setPersistWarning("Upozorenje: nedovoljno prostora za trajno spremanje svih fotografija. Podaci su možda spremljeni privremeno.");
+      setPersistWarning("Upozorenje: nedovoljno prostora za trajno spremanje svih fotografija.");
     }
   };
 
@@ -120,7 +116,7 @@ export default function App() {
     setStage("idle");
     setStagedPhoto(null);
     setPersistWarning("");
-    setInfoMode(true);
+    setInfoMode(true); // default: uključen
   };
 
   const createRn = () => {
@@ -242,7 +238,7 @@ export default function App() {
     input.click();
   });
 
-  // 1) gumb kamera/galerija → odaberi/okini fotku → čekaj postavljanje na tlocrt (privremeno ugasi info-mod)
+  // 1) nova točka — kamera/galerija → odaberi/okini → čekaj klik na tlocrt (privremeno isključi info-mod)
   const startPhotoFlow = async (fromCamera) => {
     const file = await pickPhoto(!!fromCamera);
     if (!file) return;
@@ -259,10 +255,10 @@ export default function App() {
       dateISO: `${yyyy}-${mm}-${dd}`,
     });
     setStage("awaitPlacement");
-    setInfoMode(false); // izlaz iz info-moda tijekom dodavanja
+    setInfoMode(false);
   };
 
-  // 2) klik na tlocrt → ako je u toku dodavanja, stvori točku s fotkom + 3) naziv/komentar → spremi
+  // 2) klik na tlocrt → stvori točku + 3) naziv/komentar → spremi
   const handlePlanClick = async (e) => {
     if (!pdfs.length) return;
 
@@ -271,7 +267,6 @@ export default function App() {
     const x = (e.clientX - rect.left) / rect.width;
     const y = (e.clientY - rect.top) / rect.height;
 
-    // Nije foto-tok: samo numerirana točka
     if (stage !== "awaitPlacement" || !stagedPhoto) {
       const nextSeq = seqCounter + 1;
       const newPt = {
@@ -287,7 +282,6 @@ export default function App() {
       return;
     }
 
-    // U toku dodavanja fotke:
     const nextSeq = seqCounter + 1;
 
     const base = window.prompt("Unesi naziv točke (npr. A233VIO):");
@@ -319,17 +313,40 @@ export default function App() {
     setSeqCounter(nextSeq);
     setStage("idle");
     setStagedPhoto(null);
-    setInfoMode(true); // povratak u info-mod
+    setInfoMode(true);
   };
 
-  // uredi/obriši
+  // naknadno dodavanje fotografije postojećoj točki (desktop + mobitel)
+  const attachPhotoToPoint = async (globalIdx, fromCamera) => {
+    const file = await pickPhoto(!!fromCamera);
+    if (!file) return;
+    const raw = await fileToDataURL(file);
+    const compressed = await compressImage(raw, 800, 0.7);
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+
+    setPoints(prev => {
+      const copy = [...prev];
+      const p = { ...copy[globalIdx] };
+      p.imageData = compressed;
+      p.originalName = file.name || (fromCamera ? "camera.jpg" : "gallery.jpg");
+      p.source = fromCamera ? "captured" : "uploaded";
+      p.dateISO = `${yyyy}-${mm}-${dd}`;
+      copy[globalIdx] = p;
+      return copy;
+    });
+  };
+
   const editPoint = (globalIdx) => {
     const copy = [...points];
-    const p = copy[globalIdx];
+    const p = { ...copy[globalIdx] };
     const newName = window.prompt("Uredi naziv točke:", p.name || "");
     if (newName !== null) p.name = newName.trim();
     const newComment = window.prompt("Uredi komentar:", p.comment || "");
     if (newComment !== null) p.comment = newComment;
+    copy[globalIdx] = p;
     setPoints(copy);
   };
 
@@ -340,7 +357,7 @@ export default function App() {
     setPoints(copy);
   };
 
-  // export
+  // exporti
   const exportExcel = () => {
     const list = points
       .filter((p) => pdfs[p.pdfIdx])
@@ -383,7 +400,6 @@ export default function App() {
     ghost: { background: "transparent" },
   };
 
-  // filtrirane točke za prikaz
   const currentPoints = points
     .map((p, idx) => ({ ...p, _idx: idx }))
     .filter((p) => p.pdfIdx === activePdfIdx && p.page === pageNumber)
@@ -471,9 +487,9 @@ export default function App() {
               style={{ ...btn.base }}
               onClick={() => setInfoMode(v => !v)}
               disabled={!pdfs.length}
-              title="Info-mod: prikaz podataka o točkama samo na hover/tap"
+              title="Prikaži podatke o točkama samo na hover/tap"
             >
-              ℹ️ Info točka: {infoMode ? "UKLJUČENO" : "ISKLJUČENO"}
+              TOČKA INFO: {infoMode ? "UKLJUČENO" : "ISKLJUČENO"}
             </button>
             {stage === "awaitPlacement" && (
               <div style={{ alignSelf: "center", fontSize: 12, color: "#cfdadd" }}>
@@ -518,11 +534,11 @@ export default function App() {
                 key={p.seq}
                 onMouseEnter={() => infoMode && setHoverSeq(p.seq)}
                 onMouseLeave={() => infoMode && setHoverSeq(s => (s === p.seq ? null : s))}
-                onClick={(e) => { 
-                  // na mobilnom kratki tap prikaže info na 2s (ako je info-mod ON i nismo u dodavanju)
+                onClick={(e) => {
                   if (stage === "idle" && infoMode) {
                     e.stopPropagation();
-                    tapShowInfo(p.seq);
+                    setHoverSeq(p.seq);
+                    setTimeout(() => setHoverSeq((s)=> (s===p.seq? null : s)), 2000);
                   }
                 }}
                 style={{ position: "absolute", left: `${p.xNorm*100}%`, top: `${p.yNorm*100}%`, transform: "translate(-50%,-50%)", cursor: infoMode ? "pointer" : "default" }}
@@ -573,20 +589,16 @@ export default function App() {
               const hasPhoto = !!p.imageData;
               return (
                 <div key={p.seq} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, border: `1px solid ${deco.edge}`, borderRadius: 10, padding: "8px 10px", background: "#0f2328" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                     <span style={{ fontWeight: 800, color: deco.gold }}>#{p.seq}</span>
-                    {hasPhoto ? (
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button style={{ ...btn.base }} onClick={() => attachPhotoToPoint(globalIdx, false)} title="Dodaj/Promijeni fotografiju iz galerije">➕ Foto (galerija)</button>
+                      <button style={{ ...btn.base }} onClick={() => attachPhotoToPoint(globalIdx, true)} title="Dodaj/Promijeni fotografiju s kamere">➕ Foto (kamera)</button>
+                    </div>
+                    {hasPhoto && (
                       <button style={{ ...btn.base }} onClick={() => setPreviewPhoto(p)} title="Pregled fotografije">🔍</button>
-                    ) : (
-                      <button
-                        style={{ ...btn.base }}
-                        onClick={() => startPhotoFlow(false)}
-                        title="Dodaj fotografiju iz galerije pa klikni na tlocrt"
-                      >
-                        ➕📷
-                      </button>
                     )}
-                    <div style={{ fontWeight: 700 }}>{p.name || "(bez naziva)"}</div>
+                    <div style={{ fontWeight: 700, minWidth: 120 }}>{p.name || "(bez naziva)"}</div>
                     <div style={{ fontSize: 12, color: "#9fb2b8" }}>
                       {hasPhoto ? `${p.originalName} · ${p.dateISO} · ${p.source === "captured" ? "kamera" : "galerija"}` : "bez fotografije"}
                     </div>
