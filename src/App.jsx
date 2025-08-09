@@ -19,20 +19,19 @@ export default function App() {
   const [numPages, setNumPages] = useState(1);
   const [pageNumber, setPageNumber] = useState(1);
 
-  // točke: minimalno xNorm,yNorm, seq; ostalo se dodaje nakon klika na točku
+  // točke: minimalno xNorm,yNorm, seq; uz to i podaci
   const [points, setPoints] = useState([]); // [{xNorm,yNorm,seq,name,comment,imageData,originalName,dateISO,pdfIdx,page,source,sessionId}]
+  const [seqCounter, setSeqCounter] = useState(0);
+
   const [previewPhoto, setPreviewPhoto] = useState(null);
   const [showAllSessions, setShowAllSessions] = useState(false);
   const sessionId = useMemo(() => Date.now(), []);
 
   const [pdfError, setPdfError] = useState("");
-  const [loading, setLoading] = useState(false);
 
-  // default izvor (postave ga gumbi, može i null pa pitamo)
-  const [defaultSource, setDefaultSource] = useState(null); // "captured" | "uploaded" | null
-
-  // brojač rednih brojeva točaka po RN (globalno unutar RN-a, ne po stranici)
-  const [seqCounter, setSeqCounter] = useState(0);
+  // NOVO: tok dodavanja — 1) fotka → 2) postavi točku → 3) naziv/komentar
+  const [stage, setStage] = useState("idle"); // "idle" | "awaitPlacement"
+  const [stagedPhoto, setStagedPhoto] = useState(null); // {dataURL, originalName, source, dateISO}
 
   const pageWrapRef = useRef(null);
   const exportRef = useRef(null);
@@ -70,7 +69,8 @@ export default function App() {
     setPoints(data.points || []);
     setSeqCounter(Number(data.seqCounter || 0));
     setShowAllSessions(false);
-    setDefaultSource(null);
+    setStage("idle");
+    setStagedPhoto(null);
   };
 
   const createRn = () => {
@@ -83,13 +83,10 @@ export default function App() {
     const init = { pdfs: [], activePdfIdx: 0, pageNumber: 1, points: [], seqCounter: 0 };
     localStorage.setItem(STORAGE_PREFIX + name, JSON.stringify(init));
     setActiveRn(name);
-    setPdfs([]);
-    setActivePdfIdx(0);
-    setPageNumber(1);
-    setPoints([]);
-    setSeqCounter(0);
+    setPdfs([]); setActivePdfIdx(0); setPageNumber(1); setPoints([]); setSeqCounter(0);
     setShowAllSessions(false);
-    setDefaultSource(null);
+    setStage("idle");
+    setStagedPhoto(null);
   };
 
   const renameRn = () => {
@@ -123,8 +120,6 @@ export default function App() {
   };
 
   const addPdf = async (file) => {
-    setLoading(true);
-    setPdfError("");
     try {
       const buf = await file.arrayBuffer();
       const uint8 = new Uint8Array(buf);
@@ -136,8 +131,6 @@ export default function App() {
     } catch (e) {
       console.error("addPdf error:", e);
       setPdfError("Ne mogu učitati ovaj PDF (addPdf).");
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -187,87 +180,6 @@ export default function App() {
     return { data: u8 };
   })();
 
-  const wrap = { minHeight: "100%", background: `linear-gradient(180deg, ${deco.bg} 0%, #0b181c 100%)`, color: deco.ink, fontFamily: "Inter,system-ui,Arial,sans-serif" };
-  const container = { maxWidth: 1180, margin: "0 auto", padding: 16 };
-  const panel = { background: deco.card, border: `1px solid ${deco.edge}`, borderRadius: 14, padding: 12, boxShadow: "0 1px 0 rgba(255,255,255,0.03) inset, 0 6px 24px rgba(0,0,0,0.25)" };
-  const btn = {
-    base: { padding: "8px 12px", borderRadius: 10, border: `1px solid ${deco.edge}`, background: "#0f2328", color: deco.ink, cursor: "pointer" },
-    primary: { background: deco.accent, borderColor: deco.accent, color: "#fff" },
-    gold: { background: deco.gold, borderColor: deco.gold, color: "#1a1a1a" },
-    warn: { background: "#d99114", borderColor: "#d99114", color: "#fff" },
-    danger: { background: "#a62c2b", borderColor: "#a62c2b", color: "#fff" },
-    ghost: { background: "transparent" },
-  };
-
-  const currentPoints = points
-    .map((p, idx) => ({ ...p, _idx: idx }))
-    .filter((p) => p.pdfIdx === activePdfIdx && p.page === pageNumber)
-    .filter((p) => (showAllSessions ? true : p.sessionId === sessionId));
-
-  // klik na tlocrt -> samo dodaj točku s rednim brojem
-  const handlePlanClick = (e) => {
-    if (!pdfs.length) return;
-    const rect = pageWrapRef.current.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (e.clientY - rect.top) / rect.height;
-    const nextSeq = seqCounter + 1;
-    const newPt = {
-      xNorm: x,
-      yNorm: y,
-      seq: nextSeq,          // redni broj (prikazuje se uz točku)
-      name: "",              // kasnije dodajemo
-      comment: "",
-      imageData: null,
-      originalName: "",
-      dateISO: "",
-      pdfIdx: activePdfIdx,
-      page: pageNumber,
-      source: null,
-      sessionId
-    };
-    setPoints(prev => [...prev, newPt]);
-    setSeqCounter(nextSeq);
-  };
-
-  // klik na točku -> traži izvor + naziv + komentar + fotku i dopuni točku
-  const handlePointClick = async (pt) => {
-    let source = defaultSource;
-    if (!source) {
-      const preferCamera = window.confirm("Želite li fotografirati (OK) ili odabrati iz galerije (Cancel)?");
-      source = preferCamera ? "captured" : "uploaded";
-    }
-    const base = window.prompt("Unesi naziv točke (npr. A233VIO):");
-    if (!base) return;
-    const comment = window.prompt("Unesi komentar (opcionalno):") || "";
-
-    const photo = await pickPhoto(source === "captured");
-    if (!photo) return;
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      const d = new Date();
-      const yyyy = d.getFullYear();
-      const mm = String(d.getMonth() + 1).padStart(2, "0");
-      const dd = String(d.getDate()).padStart(2, "0");
-      const fullName = `${base}${yyyy}${mm}${dd}`;
-
-      setPoints(prev => prev.map(p =>
-        p === pt
-          ? {
-              ...p,
-              name: fullName,
-              comment,
-              imageData: reader.result,
-              originalName: photo.name || (source === "captured" ? "camera.jpg" : "gallery.jpg"),
-              dateISO: `${yyyy}-${mm}-${dd}`,
-              source
-            }
-          : p
-      ));
-    };
-    reader.readAsDataURL(photo);
-  };
-
   const pickPhoto = (preferCamera=false) => new Promise((resolve) => {
     const input = document.createElement("input");
     input.type = "file";
@@ -276,6 +188,86 @@ export default function App() {
     input.onchange = (ev) => resolve(ev.target.files?.[0] || null);
     input.click();
   });
+
+  // 1) gumb kamera/galerija → odaberi/okini fotku → čekaj postavljanje na tlocrt
+  const startPhotoFlow = async (fromCamera) => {
+    const file = await pickPhoto(!!fromCamera);
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const d = new Date();
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      const dd = String(d.getDate()).padStart(2, "0");
+      setStagedPhoto({
+        dataURL: reader.result,
+        originalName: file.name || (fromCamera ? "camera.jpg" : "gallery.jpg"),
+        source: fromCamera ? "captured" : "uploaded",
+        dateISO: `${yyyy}-${mm}-${dd}`,
+      });
+      setStage("awaitPlacement");
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // 2) klik na tlocrt → stvori točku i pridruži stagedPhoto → 3) pitaj naziv/komentar → spremi
+  const handlePlanClick = async (e) => {
+    if (!pdfs.length) return;
+
+    const rect = pageWrapRef.current.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
+
+    // Ako nismo u toku dodavanja fotke — samo kreiraj "praznu" točku s rednim brojem
+    if (stage !== "awaitPlacement" || !stagedPhoto) {
+      const nextSeq = seqCounter + 1;
+      const newPt = {
+        xNorm: x, yNorm: y,
+        seq: nextSeq,
+        name: "", comment: "",
+        imageData: null, originalName: "", dateISO: "",
+        pdfIdx: activePdfIdx, page: pageNumber,
+        source: null, sessionId
+      };
+      setPoints((prev) => [...prev, newPt]);
+      setSeqCounter(nextSeq);
+      return;
+    }
+
+    // U toku smo dodavanja fotke
+    const nextSeq = seqCounter + 1;
+
+    // 3) naziv + komentar nakon što je točka postavljena
+    const base = window.prompt("Unesi naziv točke (npr. A233VIO):");
+    if (!base) { setStage("idle"); setStagedPhoto(null); return; }
+    const comment = window.prompt("Unesi komentar (opcionalno):") || "";
+
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    const fullName = `${base}${yyyy}${mm}${dd}`;
+
+    const newPt = {
+      xNorm: x,
+      yNorm: y,
+      seq: nextSeq,
+      name: fullName,
+      comment,
+      imageData: stagedPhoto.dataURL,
+      originalName: stagedPhoto.originalName,
+      dateISO: stagedPhoto.dateISO,
+      pdfIdx: activePdfIdx,
+      page: pageNumber,
+      source: stagedPhoto.source,
+      sessionId
+    };
+
+    setPoints((prev) => [...prev, newPt]);
+    setSeqCounter(nextSeq);
+    setStage("idle");
+    setStagedPhoto(null);
+  };
 
   const editPoint = (globalIdx) => {
     const copy = [...points];
@@ -322,9 +314,26 @@ export default function App() {
     pdf.save("nacrt_s_tockama.pdf");
   };
 
+  const wrap = { minHeight: "100%", background: `linear-gradient(180deg, ${deco.bg} 0%, #0b181c 100%)`, color: deco.ink, fontFamily: "Inter,system-ui,Arial,sans-serif" };
+  const container = { maxWidth: 1180, margin: "0 auto", padding: 16 };
+  const panel = { background: deco.card, border: `1px solid ${deco.edge}`, borderRadius: 14, padding: 12, boxShadow: "0 1px 0 rgba(255,255,255,0.03) inset, 0 6px 24px rgba(0,0,0,0.25)" };
+  const btn = {
+    base: { padding: "8px 12px", borderRadius: 10, border: `1px solid ${deco.edge}`, background: "#0f2328", color: deco.ink, cursor: "pointer" },
+    primary: { background: deco.accent, borderColor: deco.accent, color: "#fff" },
+    gold: { background: deco.gold, borderColor: deco.gold, color: "#1a1a1a" },
+    warn: { background: "#d99114", borderColor: "#d99114", color: "#fff" },
+    danger: { background: "#a62c2b", borderColor: "#a62c2b", color: "#fff" },
+    ghost: { background: "transparent" },
+  };
+
+  const currentPoints = points
+    .map((p, idx) => ({ ...p, _idx: idx }))
+    .filter((p) => p.pdfIdx === activePdfIdx && p.page === pageNumber)
+    .filter((p) => (showAllSessions ? true : p.sessionId === sessionId));
+
   return (
-    <div style={{ minHeight: "100%", background: `linear-gradient(180deg, ${deco.bg} 0%, #0b181c 100%)`, color: deco.ink, fontFamily: "Inter,system-ui,Arial,sans-serif" }}>
-      <div style={{ maxWidth: 1180, margin: "0 auto", padding: 16 }}>
+    <div style={wrap}>
+      <div style={container}>
         <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div style={{ width: 40, height: 40, borderRadius: 8, background: deco.gold, display: "grid", placeItems: "center", color: "#1b1b1b", fontWeight: 800, letterSpacing: 1 }}>P</div>
@@ -377,38 +386,28 @@ export default function App() {
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
             <button
               style={{ ...btn.base, ...btn.primary }}
-              onClick={() => setDefaultSource("captured")}
+              onClick={() => startPhotoFlow(true)}
               disabled={!pdfs.length}
-              title="Postavi kameru kao zadani izvor – potom klikni točku na tlocrtu"
+              title="1) fotografiraj  2) klik na tlocrt  3) naziv/komentar"
             >
               📷 Nova točka (kamera)
             </button>
             <button
               style={{ ...btn.base }}
-              onClick={() => setDefaultSource("uploaded")}
+              onClick={() => startPhotoFlow(false)}
               disabled={!pdfs.length}
-              title="Postavi galeriju kao zadani izvor – potom klikni točku na tlocrtu"
+              title="1) odaberi iz galerije  2) klik na tlocrt  3) naziv/komentar"
             >
               📁 Nova točka (galerija)
             </button>
-            {defaultSource && (
+            {stage === "awaitPlacement" && (
               <div style={{ alignSelf: "center", fontSize: 12, color: "#cfdadd" }}>
-                Sada klikni na tlocrt za dodavanje točke #{seqCounter + 1}.
+                Odabrana je fotografija — sada dodirni tlocrt za poziciju točke…
               </div>
             )}
           </div>
 
           {pdfError && <div style={{ marginTop: 8, fontSize: 12, color: "#ffb3b3" }}>{pdfError}</div>}
-
-          {!!pdfs.length && (
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
-              {pdfs.map((p, i) => (
-                <button key={p.id} style={{ ...btn.base, ...(i === activePdfIdx ? btn.gold : btn.ghost) }} onClick={() => selectPdf(i)}>
-                  {p.name}
-                </button>
-              ))}
-            </div>
-          )}
         </section>
 
         <section ref={exportRef} style={{ ...panel }}>
@@ -424,13 +423,13 @@ export default function App() {
             ref={pageWrapRef}
             onClick={handlePlanClick}
             style={{ position: "relative", border: `1px solid ${deco.edge}`, borderRadius: 12, overflow: "hidden", background: "#0f2328", padding: 8 }}
-            title="Klikni na tlocrt da dodaš novu točku (redni broj)"
+            title="Klikni na tlocrt za dodavanje točke"
           >
             {pageFile ? (
               <Document
                 file={pageFile}
                 onLoadSuccess={onDocLoad}
-                onLoadError={(e) => setPdfError("Greška pri učitavanju PDF-a.")}
+                onLoadError={() => setPdfError("Greška pri učitavanju PDF-a.")}
               >
                 <Page pageNumber={pageNumber} width={Math.min(1100, window.innerWidth - 60)} />
               </Document>
@@ -440,15 +439,35 @@ export default function App() {
 
             {currentPoints.map((p) => (
               <div
-                key={`${p.xNorm}-${p.yNorm}-${p.seq}`}
-                onClick={(ev) => { ev.stopPropagation(); handlePointClick(p); }}
-                style={{ position: "absolute", left: `${p.xNorm*100}%`, top: `${p.yNorm*100}%`, transform: "translate(-50%,-50%)", cursor: "pointer" }}
-                title={p.name ? p.name : `Točka #${p.seq}`}
+                key={p.seq}
+                style={{ position: "absolute", left: `${p.xNorm*100}%`, top: `${p.yNorm*100}%`, transform: "translate(-50%,-50%)" }}
               >
                 <div style={{ width: 14, height: 14, borderRadius: 999, background: deco.gold, border: "2px solid #000" }} />
                 <div style={{ position: "absolute", left: 18, top: -10, background: "rgba(0,0,0,0.65)", color: "#fff", padding: "2px 6px", borderRadius: 8, fontSize: 12 }}>
                   {p.seq}
                 </div>
+
+                {/* STALNI OPIS U OBLAKU — kad postoje podaci */}
+                {(p.name || p.comment || p.dateISO || p.originalName) && (
+                  <div style={{
+                    position: "absolute",
+                    left: 20, top: 14,
+                    background: "rgba(0,0,0,0.78)",
+                    color: "#fff",
+                    padding: "6px 8px",
+                    borderRadius: 10,
+                    border: "1px solid rgba(255,255,255,.2)",
+                    minWidth: 190,
+                    maxWidth: 320,
+                    zIndex: 10
+                  }}>
+                    <div style={{ fontWeight: 800, marginBottom: 4 }}>#{p.seq} {p.name ? `· ${p.name}` : ""}</div>
+                    {p.comment && <div>Napomena: {p.comment}</div>}
+                    <div>Datum: {p.dateISO || "(n/a)"}</div>
+                    <div>Izvor: {p.source ? (p.source === "captured" ? "kamera" : "galerija") : "(nema)"}</div>
+                    <div>Foto: {p.originalName || "(nema)"}</div>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -463,18 +482,20 @@ export default function App() {
         </section>
 
         <section style={{ ...panel, marginTop: 12 }}>
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>Fotografije (lista — klik 🔍 za pregled)</div>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>Fotografije (lista)</div>
           <div style={{ display: "grid", gap: 8 }}>
             {currentPoints.map((p, i) => {
-              const globalIdx = points.findIndex(q => q === p);
+              const globalIdx = points.findIndex(q => q.seq === p.seq);
               const hasPhoto = !!p.imageData;
               return (
-                <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, border: `1px solid ${deco.edge}`, borderRadius: 10, padding: "8px 10px", background: "#0f2328" }}>
+                <div key={p.seq} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, border: `1px solid ${deco.edge}`, borderRadius: 10, padding: "8px 10px", background: "#0f2328" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <span style={{ fontWeight: 800, color: deco.gold }}>#{p.seq}</span>
-                    <button style={{ ...btn.base }} onClick={() => hasPhoto ? setPreviewPhoto(p) : handlePointClick(p)} title={hasPhoto ? "Pregled fotografije" : "Dodaj fotografiju"}>
-                      {hasPhoto ? "🔍" : "➕📷"}
-                    </button>
+                    {hasPhoto ? (
+                      <button style={{ ...btn.base }} onClick={() => setPreviewPhoto(p)} title="Pregled fotografije">🔍</button>
+                    ) : (
+                      <button style={{ ...btn.base }} onClick={() => startPhotoFlow(false)} title="Dodaj fotografiju iz galerije pa klikni na tlocrt">➕📷</button>
+                    )}
                     <div style={{ fontWeight: 700 }}>{p.name || "(bez naziva)"}</div>
                     <div style={{ fontSize: 12, color: "#9fb2b8" }}>
                       {hasPhoto ? `${p.originalName} · ${p.dateISO} · ${p.source === "captured" ? "kamera" : "galerija"}` : "bez fotografije"}
