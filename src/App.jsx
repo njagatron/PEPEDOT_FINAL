@@ -14,13 +14,12 @@ export default function App() {
   const [rnList, setRnList] = useState([]);
   const [activeRn, setActiveRn] = useState("");
 
-  const [pdfs, setPdfs] = useState([]); // [{id,name,data:Array<number>,numPages}]
+  const [pdfs, setPdfs] = useState([]);
   const [activePdfIdx, setActivePdfIdx] = useState(0);
   const [numPages, setNumPages] = useState(1);
   const [pageNumber, setPageNumber] = useState(1);
 
-  // točke: minimalno xNorm,yNorm, seq; uz to i podaci
-  const [points, setPoints] = useState([]); // [{xNorm,yNorm,seq,name,comment,imageData,originalName,dateISO,pdfIdx,page,source,sessionId}]
+  const [points, setPoints] = useState([]); // {xNorm,yNorm,seq,name,comment,imageData,originalName,dateISO,pdfIdx,page,source,sessionId}
   const [seqCounter, setSeqCounter] = useState(0);
 
   const [previewPhoto, setPreviewPhoto] = useState(null);
@@ -29,9 +28,12 @@ export default function App() {
 
   const [pdfError, setPdfError] = useState("");
 
-  // NOVO: tok dodavanja — 1) fotka → 2) postavi točku → 3) naziv/komentar
+  // Foto-tok: 1) odaberi/snimi → 2) postavi na plan → 3) naziv/komentar
   const [stage, setStage] = useState("idle"); // "idle" | "awaitPlacement"
   const [stagedPhoto, setStagedPhoto] = useState(null); // {dataURL, originalName, source, dateISO}
+
+  // Prikaz opisa uz točke
+  const [showInfo, setShowInfo] = useState(true);
 
   const pageWrapRef = useRef(null);
   const exportRef = useRef(null);
@@ -210,15 +212,16 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
-  // 2) klik na tlocrt → stvori točku i pridruži stagedPhoto → 3) pitaj naziv/komentar → spremi
+  // 2) klik na tlocrt → ako je u toku dodavanja, stvori točku s fotkom + 3) naziv/komentar
   const handlePlanClick = async (e) => {
     if (!pdfs.length) return;
 
-    const rect = pageWrapRef.current.getBoundingClientRect();
+    const rect = pageWrapRef.current?.getBoundingClientRect();
+    if (!rect) return;
     const x = (e.clientX - rect.left) / rect.width;
     const y = (e.clientY - rect.top) / rect.height;
 
-    // Ako nismo u toku dodavanja fotke — samo kreiraj "praznu" točku s rednim brojem
+    // Nije foto-tok: samo numerirana točka
     if (stage !== "awaitPlacement" || !stagedPhoto) {
       const nextSeq = seqCounter + 1;
       const newPt = {
@@ -234,10 +237,9 @@ export default function App() {
       return;
     }
 
-    // U toku smo dodavanja fotke
+    // U toku dodavanja fotke:
     const nextSeq = seqCounter + 1;
 
-    // 3) naziv + komentar nakon što je točka postavljena
     const base = window.prompt("Unesi naziv točke (npr. A233VIO):");
     if (!base) { setStage("idle"); setStagedPhoto(null); return; }
     const comment = window.prompt("Unesi komentar (opcionalno):") || "";
@@ -293,6 +295,7 @@ export default function App() {
       .filter((p) => p.pdfIdx === activePdfIdx && p.page === pageNumber);
     const data = list.map((p, i) => ({
       ID: i + 1,
+      NazivTocke: p.name || "",
       NazivFotografije: p.originalName || "",
       Datum: p.dateISO || ""
     }));
@@ -400,6 +403,14 @@ export default function App() {
             >
               📁 Nova točka (galerija)
             </button>
+            <button
+              style={{ ...btn.base }}
+              onClick={() => setShowInfo(v => !v)}
+              disabled={!pdfs.length}
+              title="Uključi/isključi prikaz opisa uz točke"
+            >
+              ℹ️ Info točka: {showInfo ? "UKLJUČENO" : "ISKLJUČENO"}
+            </button>
             {stage === "awaitPlacement" && (
               <div style={{ alignSelf: "center", fontSize: 12, color: "#cfdadd" }}>
                 Odabrana je fotografija — sada dodirni tlocrt za poziciju točke…
@@ -438,17 +449,13 @@ export default function App() {
             )}
 
             {currentPoints.map((p) => (
-              <div
-                key={p.seq}
-                style={{ position: "absolute", left: `${p.xNorm*100}%`, top: `${p.yNorm*100}%`, transform: "translate(-50%,-50%)" }}
-              >
+              <div key={p.seq} style={{ position: "absolute", left: `${p.xNorm*100}%`, top: `${p.yNorm*100}%`, transform: "translate(-50%,-50%)" }}>
                 <div style={{ width: 14, height: 14, borderRadius: 999, background: deco.gold, border: "2px solid #000" }} />
                 <div style={{ position: "absolute", left: 18, top: -10, background: "rgba(0,0,0,0.65)", color: "#fff", padding: "2px 6px", borderRadius: 8, fontSize: 12 }}>
                   {p.seq}
                 </div>
 
-                {/* STALNI OPIS U OBLAKU — kad postoje podaci */}
-                {(p.name || p.comment || p.dateISO || p.originalName) && (
+                {showInfo && (p.name || p.comment || p.dateISO || p.originalName) && (
                   <div style={{
                     position: "absolute",
                     left: 20, top: 14,
@@ -494,7 +501,13 @@ export default function App() {
                     {hasPhoto ? (
                       <button style={{ ...btn.base }} onClick={() => setPreviewPhoto(p)} title="Pregled fotografije">🔍</button>
                     ) : (
-                      <button style={{ ...btn.base }} onClick={() => startPhotoFlow(false)} title="Dodaj fotografiju iz galerije pa klikni na tlocrt">➕📷</button>
+                      <button
+                        style={{ ...btn.base }}
+                        onClick={() => startPhotoFlow(false)}
+                        title="Dodaj fotografiju iz galerije pa klikni na tlocrt"
+                      >
+                        ➕📷
+                      </button>
                     )}
                     <div style={{ fontWeight: 700 }}>{p.name || "(bez naziva)"}</div>
                     <div style={{ fontSize: 12, color: "#9fb2b8" }}>
