@@ -27,8 +27,9 @@ export default function App() {
   const sessionId = useMemo(() => Date.now(), []);
 
   const [pdfError, setPdfError] = useState("");
+  const [persistWarning, setPersistWarning] = useState("");
 
-  // Foto-tok: 1) odaberi/snimi → 2) postavi na plan → 3) naziv/komentar
+  // Foto-tok: 1) foto/galerija → 2) klik na tlocrt → 3) naziv/komentar
   const [stage, setStage] = useState("idle"); // "idle" | "awaitPlacement"
   const [stagedPhoto, setStagedPhoto] = useState(null); // {dataURL, originalName, source, dateISO}
 
@@ -47,6 +48,45 @@ export default function App() {
     accent: "#2a6f77",
   };
 
+  // ——— utils ———
+  const safePersist = (key, value) => {
+    try {
+      localStorage.setItem(key, value);
+      setPersistWarning("");
+    } catch (err) {
+      console.error("localStorage setItem failed:", err);
+      setPersistWarning("Upozorenje: nedovoljno prostora za trajno spremanje svih fotografija. Podaci su spremljeni privremeno.");
+    }
+  };
+
+  const fileToDataURL = (file) =>
+    new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = reject;
+      r.readAsDataURL(file);
+    });
+
+  const compressImage = (dataUrl, maxDim = 1600, quality = 0.75) =>
+    new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        const scale = Math.min(1, maxDim / Math.max(width, height));
+        const w = Math.round(width * scale);
+        const h = Math.round(height * scale);
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, w, h);
+        const out = canvas.toDataURL("image/jpeg", quality);
+        resolve(out);
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    });
+
+  // ——— init/load ———
   useEffect(() => {
     const savedList = JSON.parse(localStorage.getItem("pepedot2_rn_list") || "[]");
     const savedActive = localStorage.getItem("pepedot2_active_rn") || "";
@@ -54,11 +94,12 @@ export default function App() {
     if (savedActive && savedList.includes(savedActive)) loadRn(savedActive);
   }, []);
 
+  // ——— persist ———
   useEffect(() => {
     if (!activeRn) return;
     const payload = { pdfs, activePdfIdx, pageNumber, points, seqCounter };
-    localStorage.setItem(STORAGE_PREFIX + activeRn, JSON.stringify(payload));
-    localStorage.setItem("pepedot2_active_rn", activeRn);
+    safePersist(STORAGE_PREFIX + activeRn, JSON.stringify(payload));
+    safePersist("pepedot2_active_rn", activeRn);
   }, [pdfs, activePdfIdx, pageNumber, points, seqCounter, activeRn]);
 
   const loadRn = (rn) => {
@@ -73,6 +114,7 @@ export default function App() {
     setShowAllSessions(false);
     setStage("idle");
     setStagedPhoto(null);
+    setPersistWarning("");
   };
 
   const createRn = () => {
@@ -81,9 +123,9 @@ export default function App() {
     if (rnList.includes(name)) return window.alert("RN s tim nazivom već postoji.");
     const updated = [...rnList, name];
     setRnList(updated);
-    localStorage.setItem("pepedot2_rn_list", JSON.stringify(updated));
+    safePersist("pepedot2_rn_list", JSON.stringify(updated));
     const init = { pdfs: [], activePdfIdx: 0, pageNumber: 1, points: [], seqCounter: 0 };
-    localStorage.setItem(STORAGE_PREFIX + name, JSON.stringify(init));
+    safePersist(STORAGE_PREFIX + name, JSON.stringify(init));
     setActiveRn(name);
     setPdfs([]); setActivePdfIdx(0); setPageNumber(1); setPoints([]); setSeqCounter(0);
     setShowAllSessions(false);
@@ -99,12 +141,12 @@ export default function App() {
     const oldKey = STORAGE_PREFIX + activeRn;
     const data = localStorage.getItem(oldKey);
     if (data) {
-      localStorage.setItem(STORAGE_PREFIX + newName, data);
+      safePersist(STORAGE_PREFIX + newName, data);
       localStorage.removeItem(oldKey);
     }
     const updated = rnList.map((r) => (r === activeRn ? newName : r));
     setRnList(updated);
-    localStorage.setItem("pepedot2_rn_list", JSON.stringify(updated));
+    safePersist("pepedot2_rn_list", JSON.stringify(updated));
     setActiveRn(newName);
   };
 
@@ -195,21 +237,19 @@ export default function App() {
   const startPhotoFlow = async (fromCamera) => {
     const file = await pickPhoto(!!fromCamera);
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const d = new Date();
-      const yyyy = d.getFullYear();
-      const mm = String(d.getMonth() + 1).padStart(2, "0");
-      const dd = String(d.getDate()).padStart(2, "0");
-      setStagedPhoto({
-        dataURL: reader.result,
-        originalName: file.name || (fromCamera ? "camera.jpg" : "gallery.jpg"),
-        source: fromCamera ? "captured" : "uploaded",
-        dateISO: `${yyyy}-${mm}-${dd}`,
-      });
-      setStage("awaitPlacement");
-    };
-    reader.readAsDataURL(file);
+    const raw = await fileToDataURL(file);
+    const compressed = await compressImage(raw, 1600, 0.75);
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    setStagedPhoto({
+      dataURL: compressed,
+      originalName: file.name || (fromCamera ? "camera.jpg" : "gallery.jpg"),
+      source: fromCamera ? "captured" : "uploaded",
+      dateISO: `${yyyy}-${mm}-${dd}`,
+    });
+    setStage("awaitPlacement");
   };
 
   // 2) klik na tlocrt → ako je u toku dodavanja, stvori točku s fotkom + 3) naziv/komentar
@@ -419,6 +459,7 @@ export default function App() {
           </div>
 
           {pdfError && <div style={{ marginTop: 8, fontSize: 12, color: "#ffb3b3" }}>{pdfError}</div>}
+          {persistWarning && <div style={{ marginTop: 8, fontSize: 12, color: "#ffd27d" }}>{persistWarning}</div>}
         </section>
 
         <section ref={exportRef} style={{ ...panel }}>
