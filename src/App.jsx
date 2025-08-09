@@ -32,7 +32,7 @@ export default function App() {
   const [stage, setStage] = useState("idle"); // "idle" | "awaitPlacement"
   const [stagedPhoto, setStagedPhoto] = useState(null); // {dataURL, originalName, source, dateISO}
 
-  // INFO MOD — default ON, prikaz info samo na hover/tap
+  // TOČKA INFO — default UKLJUČENO (pregled-only); hover/tap pokazuje info
   const [infoMode, setInfoMode] = useState(true);
   const [hoverSeq, setHoverSeq] = useState(null);
 
@@ -48,7 +48,6 @@ export default function App() {
     accent: "#2a6f77",
   };
 
-  // utils
   const safePersist = (key, value) => {
     try {
       localStorage.setItem(key, value);
@@ -71,22 +70,19 @@ export default function App() {
     new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
-        let { width, height } = img;
-        const scale = Math.min(1, maxDim / Math.max(width, height));
-        const w = Math.round(width * scale);
-        const h = Math.round(height * scale);
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const w = Math.round(img.width * scale);
+        const h = Math.round(img.height * scale);
         const canvas = document.createElement("canvas");
         canvas.width = w; canvas.height = h;
         const ctx = canvas.getContext("2d");
         ctx.drawImage(img, 0, 0, w, h);
-        const out = canvas.toDataURL("image/jpeg", quality);
-        resolve(out);
+        resolve(canvas.toDataURL("image/jpeg", quality));
       };
       img.onerror = () => resolve(dataUrl);
       img.src = dataUrl;
     });
 
-  // init
   useEffect(() => {
     const savedList = JSON.parse(localStorage.getItem("pepedot2_rn_list") || "[]");
     const savedActive = localStorage.getItem("pepedot2_active_rn") || "";
@@ -94,7 +90,6 @@ export default function App() {
     if (savedActive && savedList.includes(savedActive)) loadRn(savedActive);
   }, []);
 
-  // persist
   useEffect(() => {
     if (!activeRn) return;
     const payload = { pdfs, activePdfIdx, pageNumber, points, seqCounter };
@@ -102,7 +97,6 @@ export default function App() {
     safePersist("pepedot2_active_rn", activeRn);
   }, [pdfs, activePdfIdx, pageNumber, points, seqCounter, activeRn]);
 
-  // RN
   const loadRn = (rn) => {
     const raw = localStorage.getItem(STORAGE_PREFIX + rn);
     const data = raw ? JSON.parse(raw) : { pdfs: [], activePdfIdx: 0, pageNumber: 1, points: [], seqCounter: 0 };
@@ -116,7 +110,7 @@ export default function App() {
     setStage("idle");
     setStagedPhoto(null);
     setPersistWarning("");
-    setInfoMode(true); // default: uključen
+    setInfoMode(true);
   };
 
   const createRn = () => {
@@ -166,7 +160,6 @@ export default function App() {
     }
   };
 
-  // PDF
   const addPdf = async (file) => {
     try {
       const buf = await file.arrayBuffer();
@@ -228,7 +221,6 @@ export default function App() {
     return { data: u8 };
   })();
 
-  // foto odabir
   const pickPhoto = (preferCamera=false) => new Promise((resolve) => {
     const input = document.createElement("input");
     input.type = "file";
@@ -238,7 +230,6 @@ export default function App() {
     input.click();
   });
 
-  // 1) nova točka — kamera/galerija → odaberi/okini → čekaj klik na tlocrt (privremeno isključi info-mod)
   const startPhotoFlow = async (fromCamera) => {
     const file = await pickPhoto(!!fromCamera);
     if (!file) return;
@@ -255,37 +246,46 @@ export default function App() {
       dateISO: `${yyyy}-${mm}-${dd}`,
     });
     setStage("awaitPlacement");
-    setInfoMode(false);
+    setInfoMode(false); // isključi pregled – ulazimo u dodavanje
   };
 
-  // 2) klik na tlocrt → stvori točku + 3) naziv/komentar → spremi
+  // spriječi preklapanje – minDistancePx od postojećih točaka (na istom PDF-u i stranici)
+  const isTooCloseToExisting = (xNorm, yNorm, rect, minDistancePx = 18) => {
+    const w = rect.width, h = rect.height;
+    const curr = points.filter(p => p.pdfIdx === activePdfIdx && p.page === pageNumber);
+    for (const p of curr) {
+      const dx = (xNorm - p.xNorm) * w;
+      const dy = (yNorm - p.yNorm) * h;
+      const dist = Math.hypot(dx, dy);
+      if (dist < minDistancePx) return true;
+    }
+    return false;
+  };
+
   const handlePlanClick = async (e) => {
     if (!pdfs.length) return;
+
+    // ako je TOČKA INFO uključena → pregled-only (nema dodavanja)
+    if (infoMode) return;
 
     const rect = pageWrapRef.current?.getBoundingClientRect();
     if (!rect) return;
     const x = (e.clientX - rect.left) / rect.width;
     const y = (e.clientY - rect.top) / rect.height;
 
-    if (stage !== "awaitPlacement" || !stagedPhoto) {
-      const nextSeq = seqCounter + 1;
-      const newPt = {
-        xNorm: x, yNorm: y,
-        seq: nextSeq,
-        name: "", comment: "",
-        imageData: null, originalName: "", dateISO: "",
-        pdfIdx: activePdfIdx, page: pageNumber,
-        source: null, sessionId
-      };
-      setPoints((prev) => [...prev, newPt]);
-      setSeqCounter(nextSeq);
+    // odbij preblizu postojećoj točki
+    if (isTooCloseToExisting(x, y, rect, 18)) {
+      window.alert("Točka je preblizu postojećoj. Odaberi obližnju poziciju (mogu se dodirivati, ne smiju se prekriti).");
       return;
     }
+
+    // točke se dodaju samo ako je u tijeku foto-tok
+    if (stage !== "awaitPlacement" || !stagedPhoto) return;
 
     const nextSeq = seqCounter + 1;
 
     const base = window.prompt("Unesi naziv točke (npr. A233VIO):");
-    if (!base) { setStage("idle"); setStagedPhoto(null); setInfoMode(true); return; }
+    if (!base) { setStage("idle"); setStagedPhoto(null); return; }
     const comment = window.prompt("Unesi komentar (opcionalno):") || "";
 
     const d = new Date();
@@ -313,10 +313,9 @@ export default function App() {
     setSeqCounter(nextSeq);
     setStage("idle");
     setStagedPhoto(null);
-    setInfoMode(true);
+    // ostavi infoMode = false; korisnik ga kasnije ručno uključuje za pregled
   };
 
-  // naknadno dodavanje fotografije postojećoj točki (desktop + mobitel)
   const attachPhotoToPoint = async (globalIdx, fromCamera) => {
     const file = await pickPhoto(!!fromCamera);
     if (!file) return;
@@ -357,7 +356,6 @@ export default function App() {
     setPoints(copy);
   };
 
-  // exporti
   const exportExcel = () => {
     const list = points
       .filter((p) => pdfs[p.pdfIdx])
@@ -387,7 +385,6 @@ export default function App() {
     pdf.save("nacrt_s_tockama.pdf");
   };
 
-  // stilovi
   const wrap = { minHeight: "100%", background: `linear-gradient(180deg, ${deco.bg} 0%, #0b181c 100%)`, color: deco.ink, fontFamily: "Inter,system-ui,Arial,sans-serif" };
   const container = { maxWidth: 1180, margin: "0 auto", padding: 16 };
   const panel = { background: deco.card, border: `1px solid ${deco.edge}`, borderRadius: 14, padding: 12, boxShadow: "0 1px 0 rgba(255,255,255,0.03) inset, 0 6px 24px rgba(0,0,0,0.25)" };
@@ -405,7 +402,6 @@ export default function App() {
     .filter((p) => p.pdfIdx === activePdfIdx && p.page === pageNumber)
     .filter((p) => (showAllSessions ? true : p.sessionId === sessionId));
 
-  // helper za mobilni "hover": kratki tap pokaže info 2s
   const tapShowInfo = (seq) => {
     if (!infoMode) return;
     setHoverSeq(seq);
@@ -487,7 +483,7 @@ export default function App() {
               style={{ ...btn.base }}
               onClick={() => setInfoMode(v => !v)}
               disabled={!pdfs.length}
-              title="Prikaži podatke o točkama samo na hover/tap"
+              title="Pregled točaka: info samo na hover/tap"
             >
               TOČKA INFO: {infoMode ? "UKLJUČENO" : "ISKLJUČENO"}
             </button>
@@ -535,13 +531,13 @@ export default function App() {
                 onMouseEnter={() => infoMode && setHoverSeq(p.seq)}
                 onMouseLeave={() => infoMode && setHoverSeq(s => (s === p.seq ? null : s))}
                 onClick={(e) => {
-                  if (stage === "idle" && infoMode) {
+                  if (infoMode) {
                     e.stopPropagation();
                     setHoverSeq(p.seq);
                     setTimeout(() => setHoverSeq((s)=> (s===p.seq? null : s)), 2000);
                   }
                 }}
-                style={{ position: "absolute", left: `${p.xNorm*100}%`, top: `${p.yNorm*100}%`, transform: "translate(-50%,-50%)", cursor: infoMode ? "pointer" : "default" }}
+                style={{ position: "absolute", left: `${p.xNorm*100}%`, top: `${p.yNorm*100}%`, transform: "translate(-50%,-50%)", cursor: infoMode ? "pointer" : "crosshair" }}
               >
                 <div style={{ width: 14, height: 14, borderRadius: 999, background: deco.gold, border: "2px solid #000" }} />
                 <div style={{ position: "absolute", left: 18, top: -10, background: "rgba(0,0,0,0.65)", color: "#fff", padding: "2px 6px", borderRadius: 8, fontSize: 12 }}>
