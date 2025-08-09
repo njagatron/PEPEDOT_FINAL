@@ -27,6 +27,9 @@ export default function App() {
   const [pdfError, setPdfError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  // NOVO: način odabira izvora fotke (kamera/galerija) koji čeka klik na PDF
+  const [pendingSource, setPendingSource] = useState(null); // "captured" | "uploaded" | null
+
   const pageWrapRef = useRef(null);
   const exportRef = useRef(null);
 
@@ -175,14 +178,32 @@ export default function App() {
     return { data: u8 };
   })();
 
+  const pickPhoto = (preferCamera=false) => new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    if (preferCamera) input.capture = "environment";
+    input.onchange = (ev) => resolve(ev.target.files?.[0] || null);
+    input.click();
+  });
+
   const overlayClick = async (e) => {
     if (!pdfs.length) return;
+
+    // Odabir izvora: ako je postavljen preko gumba, koristimo ga; inače pitamo
+    let source = pendingSource; // "captured" | "uploaded" | null
+    if (!source) {
+      const preferCamera = window.confirm("Želite li fotografirati (OK) ili odabrati iz galerije (Cancel)?");
+      source = preferCamera ? "captured" : "uploaded";
+    }
+
     const base = window.prompt("Unesi naziv točke (npr. A233VIO):");
-    if (!base) return;
+    if (!base) { setPendingSource(null); return; }
     const comment = window.prompt("Unesi komentar (opcionalno):") || "";
-    const preferCamera = window.confirm("Želite li fotografirati (OK) ili odabrati iz galerije (Cancel)?");
-    const photo = await pickPhoto(preferCamera);
-    if (!photo) return;
+
+    const photo = await pickPhoto(source === "captured");
+    if (!photo) { setPendingSource(null); return; }
+
     const reader = new FileReader();
     reader.onload = () => {
       const rect = pageWrapRef.current.getBoundingClientRect();
@@ -198,26 +219,18 @@ export default function App() {
         name: fullName,
         comment,
         imageData: reader.result,
-        originalName: photo.name || (preferCamera ? "camera.jpg" : "gallery.jpg"),
+        originalName: photo.name || (source === "captured" ? "camera.jpg" : "gallery.jpg"),
         dateISO: `${yyyy}-${mm}-${dd}`,
         pdfIdx: activePdfIdx,
         page: pageNumber,
-        source: preferCamera ? "captured" : "uploaded",
+        source,
         sessionId
       };
       setPoints(prev => [...prev, pt]);
+      setPendingSource(null);
     };
     reader.readAsDataURL(photo);
   };
-
-  const pickPhoto = (preferCamera=false) => new Promise((resolve) => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/*";
-    if (preferCamera) input.capture = "environment";
-    input.onchange = (ev) => resolve(ev.target.files?.[0] || null);
-    input.click();
-  });
 
   const editPoint = (globalIdx) => {
     const copy = [...points];
@@ -333,13 +346,39 @@ export default function App() {
             <button style={{ ...btn.base }} onClick={exportExcel}>Izvoz Excel</button>
             <button style={{ ...btn.base, ...btn.gold }} onClick={exportPDF}>Izvoz PDF</button>
           </div>
+
+          {/* NOVO: gumbi za biranje izvora fotografije */}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+            <button
+              style={{ ...btn.base, ...btn.primary }}
+              onClick={() => setPendingSource("captured")}
+              disabled={!pdfs.length}
+              title="Započni dodavanje točke kamerom, pa dodirni tlocrt"
+            >
+              📷 Nova točka (kamera)
+            </button>
+            <button
+              style={{ ...btn.base }}
+              onClick={() => setPendingSource("uploaded")}
+              disabled={!pdfs.length}
+              title="Započni dodavanje točke izborom fotke iz galerije, pa dodirni tlocrt"
+            >
+              📁 Nova točka (galerija)
+            </button>
+            {pendingSource && (
+              <div style={{ alignSelf: "center", fontSize: 12, color: "#cfdadd" }}>
+                Dodirni tlocrt za poziciju točke…
+              </div>
+            )}
+          </div>
+
           {pdfError && <div style={{ marginTop: 8, fontSize: 12, color: "#ffb3b3" }}>{pdfError}</div>}
 
           {!!pdfs.length && (
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
               {pdfs.map((p, i) => (
                 <button key={p.id} style={{ ...btn.base, ...(i === activePdfIdx ? btn.gold : btn.ghost) }} onClick={() => selectPdf(i)}>
-                  {p.name} ({p.numPages || "?"} str.)
+                  {p.name}
                 </button>
               ))}
             </div>
