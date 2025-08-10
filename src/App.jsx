@@ -3,6 +3,10 @@ import { Document, Page, pdfjs } from "react-pdf";
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
 import * as XLSX from "xlsx";
+import JSZip from "jszip";
+import { saveAs } from "file-saver";
+import { exportRnToZip } from "./exportRn";
+import { importRnFromZip } from "./importRn";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 
@@ -19,11 +23,12 @@ export default function App() {
   const [numPages, setNumPages] = useState(1);
   const [pageNumber, setPageNumber] = useState(1);
 
-  const [points, setPoints] = useState([]); // {xNorm,yNorm,seq,name,comment,imageData,originalName,dateISO,pdfIdx,page,source,sessionId}
+  const [points, setPoints] = useState([]);
   const [seqCounter, setSeqCounter] = useState(0);
 
   const [previewPhoto, setPreviewPhoto] = useState(null);
   const [showAllSessions, setShowAllSessions] = useState(false);
+  const [compactList, setCompactList] = useState(false);
   const sessionId = useMemo(() => Date.now(), []);
 
   const [pdfError, setPdfError] = useState("");
@@ -32,7 +37,7 @@ export default function App() {
   const [stage, setStage] = useState("idle"); // "idle" | "awaitPlacement"
   const [stagedPhoto, setStagedPhoto] = useState(null); // {dataURL, originalName, source, dateISO}
 
-  // TOČKA INFO — default UKLJUČENO (pregled-only); hover/tap pokazuje info
+  // TOČKA INFO — default UKLJUČENO (pregled-only)
   const [infoMode, setInfoMode] = useState(true);
   const [hoverSeq, setHoverSeq] = useState(null);
 
@@ -52,8 +57,7 @@ export default function App() {
     try {
       localStorage.setItem(key, value);
       setPersistWarning("");
-    } catch (err) {
-      console.error("localStorage setItem failed:", err);
+    } catch {
       setPersistWarning("Upozorenje: nedovoljno prostora za trajno spremanje svih fotografija.");
     }
   };
@@ -182,12 +186,6 @@ export default function App() {
     e.target.value = "";
   };
 
-  const selectPdf = (idx) => {
-    if (idx < 0 || idx >= pdfs.length) return;
-    setActivePdfIdx(idx);
-    setPageNumber(1);
-  };
-
   const renamePdf = (idx) => {
     const p = pdfs[idx];
     const newName = (window.prompt("Novi naziv PDF-a:", p.name) || "").trim();
@@ -246,40 +244,35 @@ export default function App() {
       dateISO: `${yyyy}-${mm}-${dd}`,
     });
     setStage("awaitPlacement");
-    setInfoMode(false); // isključi pregled – ulazimo u dodavanje
+    setInfoMode(false); // ulaz u dodavanje — pregled isključen
   };
 
-  // spriječi preklapanje – minDistancePx od postojećih točaka (na istom PDF-u i stranici)
+  // zabrani preklapanje točaka
   const isTooCloseToExisting = (xNorm, yNorm, rect, minDistancePx = 18) => {
     const w = rect.width, h = rect.height;
     const curr = points.filter(p => p.pdfIdx === activePdfIdx && p.page === pageNumber);
     for (const p of curr) {
       const dx = (xNorm - p.xNorm) * w;
       const dy = (yNorm - p.yNorm) * h;
-      const dist = Math.hypot(dx, dy);
-      if (dist < minDistancePx) return true;
+      if (Math.hypot(dx, dy) < minDistancePx) return true;
     }
     return false;
   };
 
   const handlePlanClick = async (e) => {
     if (!pdfs.length) return;
-
-    // ako je TOČKA INFO uključena → pregled-only (nema dodavanja)
-    if (infoMode) return;
+    if (infoMode) return; // pregled-only kad je TOČKA INFO uključena
 
     const rect = pageWrapRef.current?.getBoundingClientRect();
     if (!rect) return;
     const x = (e.clientX - rect.left) / rect.width;
     const y = (e.clientY - rect.top) / rect.height;
 
-    // odbij preblizu postojećoj točki
     if (isTooCloseToExisting(x, y, rect, 18)) {
       window.alert("Točka je preblizu postojećoj. Odaberi obližnju poziciju (mogu se dodirivati, ne smiju se prekriti).");
       return;
     }
 
-    // točke se dodaju samo ako je u tijeku foto-tok
     if (stage !== "awaitPlacement" || !stagedPhoto) return;
 
     const nextSeq = seqCounter + 1;
@@ -313,7 +306,6 @@ export default function App() {
     setSeqCounter(nextSeq);
     setStage("idle");
     setStagedPhoto(null);
-    // ostavi infoMode = false; korisnik ga kasnije ručno uključuje za pregled
   };
 
   const attachPhotoToPoint = async (globalIdx, fromCamera) => {
@@ -385,6 +377,52 @@ export default function App() {
     pdf.save("nacrt_s_tockama.pdf");
   };
 
+  // ——— Export/Import RN (ZIP) ———
+  const doExportZip = async () => {
+    if (!activeRn) return window.alert("Nema aktivnog RN-a.");
+    const state = { pdfs, activePdfIdx, pageNumber, points, seqCounter, rnName: activeRn };
+    const zip = await exportRnToZip(state);
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    saveAs(await zip.generateAsync({ type: "blob" }), `RN-${activeRn}-${stamp}.zip`);
+  };
+
+  const doImportZip = async (file) => {
+    if (!file) return;
+    if (!activeRn) return window.alert("Odaberi ili kreiraj RN prije importa.");
+
+    // automatski backup TRENUTNOG RN-a prije uvoza
+    try {
+      const current = { pdfs, activePdfIdx, pageNumber, points, seqCounter, rnName: activeRn };
+      const backupZip = await exportRnToZip(current);
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      saveAs(await backupZip.generateAsync({ type: "blob" }), `BACKUP-${activeRn}-${stamp}.zip`);
+    } catch {}
+
+    try {
+      const imported = await importRnFromZip(file);
+      setPdfs(imported.pdfs || []);
+      setActivePdfIdx(imported.activePdfIdx || 0);
+      setPageNumber(imported.pageNumber || 1);
+      setPoints(imported.points || []);
+      setSeqCounter(imported.seqCounter || 0);
+      // spremi pod istim RN-om
+      const payload = { pdfs: imported.pdfs || [], activePdfIdx: imported.activePdfIdx || 0, pageNumber: imported.pageNumber || 1, points: imported.points || [], seqCounter: imported.seqCounter || 0 };
+      safePersist(STORAGE_PREFIX + activeRn, JSON.stringify(payload));
+      window.alert("Import završen.");
+    } catch (e) {
+      console.error(e);
+      window.alert("Neuspješan import ZIP-a.");
+    }
+  };
+
+  const onClickImportButton = () => {
+    const inp = document.createElement("input");
+    inp.type = "file";
+    inp.accept = ".zip,application/zip";
+    inp.onchange = (ev) => doImportZip(ev.target.files?.[0] || null);
+    inp.click();
+  };
+
   const wrap = { minHeight: "100%", background: `linear-gradient(180deg, ${deco.bg} 0%, #0b181c 100%)`, color: deco.ink, fontFamily: "Inter,system-ui,Arial,sans-serif" };
   const container = { maxWidth: 1180, margin: "0 auto", padding: 16 };
   const panel = { background: deco.card, border: `1px solid ${deco.edge}`, borderRadius: 14, padding: 12, boxShadow: "0 1px 0 rgba(255,255,255,0.03) inset, 0 6px 24px rgba(0,0,0,0.25)" };
@@ -401,14 +439,6 @@ export default function App() {
     .map((p, idx) => ({ ...p, _idx: idx }))
     .filter((p) => p.pdfIdx === activePdfIdx && p.page === pageNumber)
     .filter((p) => (showAllSessions ? true : p.sessionId === sessionId));
-
-  const tapShowInfo = (seq) => {
-    if (!infoMode) return;
-    setHoverSeq(seq);
-    setTimeout(() => {
-      setHoverSeq((s) => (s === seq ? null : s));
-    }, 2000);
-  };
 
   return (
     <div style={wrap}>
@@ -458,10 +488,14 @@ export default function App() {
             <button style={{ ...btn.base }} onClick={() => setShowAllSessions(s => !s)}>
               {showAllSessions ? "Prikaži samo novu sesiju" : "Prikaži sve sesije"}
             </button>
+            <button style={{ ...btn.base }} onClick={() => setCompactList(s => !s)}>
+              {compactList ? "Prikaz: detaljno" : "📱 Kompaktna lista"}
+            </button>
             <button style={{ ...btn.base }} onClick={exportExcel}>Izvoz Excel</button>
             <button style={{ ...btn.base, ...btn.gold }} onClick={exportPDF}>Izvoz PDF</button>
+            <button style={{ ...btn.base }} onClick={doExportZip}>💾 Export RN (.zip)</button>
+            <button style={{ ...btn.base }} onClick={onClickImportButton}>📂 Import RN (.zip)</button>
           </div>
-
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
             <button
               style={{ ...btn.base, ...btn.primary }}
@@ -511,7 +545,7 @@ export default function App() {
             ref={pageWrapRef}
             onClick={handlePlanClick}
             style={{ position: "relative", border: `1px solid ${deco.edge}`, borderRadius: 12, overflow: "hidden", background: "#0f2328", padding: 8 }}
-            title="Klikni na tlocrt za dodavanje točke"
+            title={infoMode ? "Pregled točaka (TOČKA INFO uključena)" : "Klikni na tlocrt za dodavanje točke"}
           >
             {pageFile ? (
               <Document
@@ -544,24 +578,20 @@ export default function App() {
                   {p.seq}
                 </div>
 
-                {infoMode && hoverSeq === p.seq && (p.name || p.comment || p.dateISO || p.originalName) && (
+                {infoMode && hoverSeq === p.seq && (p.name || p.dateISO) && (
                   <div style={{
                     position: "absolute",
                     left: 20, top: 14,
-                    background: "rgba(0,0,0,0.78)",
+                    background: "rgba(0,0,0,0.85)",
                     color: "#fff",
                     padding: "6px 8px",
                     borderRadius: 10,
                     border: "1px solid rgba(255,255,255,.2)",
-                    minWidth: 190,
-                    maxWidth: 320,
+                    minWidth: 160,
                     zIndex: 10
                   }}>
-                    <div style={{ fontWeight: 800, marginBottom: 4 }}>#{p.seq} {p.name ? `· ${p.name}` : ""}</div>
-                    {p.comment && <div>Napomena: {p.comment}</div>}
-                    <div>Datum: {p.dateISO || "(n/a)"}</div>
-                    <div>Izvor: {p.source ? (p.source === "captured" ? "kamera" : "galerija") : "(nema)"}</div>
-                    <div>Foto: {p.originalName || "(nema)"}</div>
+                    <div style={{ fontWeight: 800, marginBottom: 4 }}>{p.name || "(bez naziva)"}</div>
+                    <div style={{ fontSize: 12, opacity: 0.9 }}>Datum: {p.dateISO || "(n/a)"}</div>
                   </div>
                 )}
               </div>
@@ -579,37 +609,64 @@ export default function App() {
 
         <section style={{ ...panel, marginTop: 12 }}>
           <div style={{ fontWeight: 700, marginBottom: 8 }}>Fotografije (lista)</div>
-          <div style={{ display: "grid", gap: 8 }}>
-            {currentPoints.map((p) => {
-              const globalIdx = points.findIndex(q => q.seq === p.seq);
-              const hasPhoto = !!p.imageData;
-              return (
-                <div key={p.seq} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, border: `1px solid ${deco.edge}`, borderRadius: 10, padding: "8px 10px", background: "#0f2328" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                    <span style={{ fontWeight: 800, color: deco.gold }}>#{p.seq}</span>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <button style={{ ...btn.base }} onClick={() => attachPhotoToPoint(globalIdx, false)} title="Dodaj/Promijeni fotografiju iz galerije">➕ Foto (galerija)</button>
-                      <button style={{ ...btn.base }} onClick={() => attachPhotoToPoint(globalIdx, true)} title="Dodaj/Promijeni fotografiju s kamere">➕ Foto (kamera)</button>
+
+          {!compactList && (
+            <div style={{ display: "grid", gap: 8 }}>
+              {currentPoints.map((p) => {
+                const globalIdx = points.findIndex(q => q.seq === p.seq);
+                const hasPhoto = !!p.imageData;
+                return (
+                  <div key={p.seq} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, border: `1px solid ${deco.edge}`, borderRadius: 10, padding: "8px 10px", background: "#0f2328" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                      <span style={{ fontWeight: 800, color: deco.gold }}>#{p.seq}</span>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button style={{ ...btn.base }} onClick={() => attachPhotoToPoint(globalIdx, false)}>➕ Foto (galerija)</button>
+                        <button style={{ ...btn.base }} onClick={() => attachPhotoToPoint(globalIdx, true)}>➕ Foto (kamera)</button>
+                      </div>
+                      {hasPhoto && (
+                        <button style={{ ...btn.base }} onClick={() => setPreviewPhoto(p)} title="Pregled fotografije">🔍</button>
+                      )}
+                      <div style={{ fontWeight: 700, minWidth: 120 }}>{p.name || "(bez naziva)"}</div>
+                      <div style={{ fontSize: 12, color: "#9fb2b8" }}>
+                        {hasPhoto ? `${p.originalName} · ${p.dateISO} · ${p.source === "captured" ? "kamera" : "galerija"}` : "bez fotografije"}
+                      </div>
                     </div>
-                    {hasPhoto && (
-                      <button style={{ ...btn.base }} onClick={() => setPreviewPhoto(p)} title="Pregled fotografije">🔍</button>
-                    )}
-                    <div style={{ fontWeight: 700, minWidth: 120 }}>{p.name || "(bez naziva)"}</div>
-                    <div style={{ fontSize: 12, color: "#9fb2b8" }}>
-                      {hasPhoto ? `${p.originalName} · ${p.dateISO} · ${p.source === "captured" ? "kamera" : "galerija"}` : "bez fotografije"}
+                    <div style={{ display: "flex", gap: 8 }}>
+                      {hasPhoto && (
+                        <a href={p.imageData} download={`${p.source || "photo"}_${p.originalName || "photo.jpg"}`} style={{ ...btn.base, ...btn.ghost, textDecoration: "none" }}>⬇️</a>
+                      )}
+                      <button style={{ ...btn.base, ...btn.warn }} onClick={() => editPoint(globalIdx)}>Uredi</button>
+                      <button style={{ ...btn.base, ...btn.danger }} onClick={() => deletePoint(globalIdx)}>Obriši</button>
                     </div>
                   </div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    {hasPhoto && (
-                      <a href={p.imageData} download={`${p.source || "photo"}_${p.originalName || "photo.jpg"}`} style={{ ...btn.base, ...btn.ghost, textDecoration: "none" }} title="Preuzmi fotografiju">⬇️</a>
-                    )}
-                    <button style={{ ...btn.base, ...btn.warn }} onClick={() => editPoint(globalIdx)}>Uredi</button>
-                    <button style={{ ...btn.base, ...btn.danger }} onClick={() => deletePoint(globalIdx)}>Obriši</button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
+
+          {compactList && (
+            <div style={{ display: "grid", gap: 6 }}>
+              {currentPoints.map((p) => {
+                const globalIdx = points.findIndex(q => q.seq === p.seq);
+                const hasPhoto = !!p.imageData;
+                return (
+                  <button key={p.seq}
+                    onClick={() => hasPhoto ? setPreviewPhoto(p) : null}
+                    style={{ textAlign: "left", display: "flex", gap: 8, alignItems: "center", padding: "10px 12px", borderRadius: 10, border: `1px solid ${deco.edge}`, background: "#0f2328", color: deco.ink }}>
+                    <span style={{ fontWeight: 800, color: deco.gold, minWidth: 34 }}>#{p.seq}</span>
+                    <span style={{ flex: 1 }}>{p.name || "(bez naziva)"} · {p.dateISO || "—"}</span>
+                    <span>{hasPhoto ? "🖼️" : "—"}</span>
+                    <span style={{ display: "flex", gap: 6 }}>
+                      <span onClick={(e)=>{e.stopPropagation(); attachPhotoToPoint(globalIdx,false);}} style={{ cursor:"pointer" }}>➕📁</span>
+                      <span onClick={(e)=>{e.stopPropagation(); attachPhotoToPoint(globalIdx,true);}} style={{ cursor:"pointer" }}>➕📷</span>
+                      <span onClick={(e)=>{e.stopPropagation(); editPoint(globalIdx);}} style={{ cursor:"pointer" }}>✏️</span>
+                      <span onClick={(e)=>{e.stopPropagation(); deletePoint(globalIdx);}} style={{ cursor:"pointer" }}>🗑️</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </section>
 
         {previewPhoto && (
